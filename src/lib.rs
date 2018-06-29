@@ -496,6 +496,43 @@ impl<T: Abomonation> Abomonation for Vec<T> {
     }
 }
 
+impl<T: Abomonation> Abomonation for ::std::collections::VecDeque<T> {
+    #[inline]
+    unsafe fn entomb<W: Write>(&self, write: &mut W) -> IOResult<()> {
+        let (first_slice, second_slice) = self.as_slices();
+        write.write_all(typed_to_bytes(first_slice))?;
+        write.write_all(typed_to_bytes(second_slice))?;
+        for element in self.iter() { element.entomb(write)?; }
+        Ok(())
+    }
+    #[inline]
+    unsafe fn exhume<'a,'b>(&'a mut self, bytes: &'b mut [u8]) -> Option<&'b mut [u8]> {
+
+        // extract memory from bytes to back our vector
+        let binary_len = self.len() * mem::size_of::<T>();
+        if binary_len > bytes.len() { None }
+        else {
+            let (mine, mut rest) = bytes.split_at_mut(binary_len);
+            let slice = std::slice::from_raw_parts_mut(mine.as_mut_ptr() as *mut T, self.len());
+            let vec = Vec::from_raw_parts(slice.as_mut_ptr(), self.len(), self.len());
+            std::ptr::write(self, ::std::collections::VecDeque::from(vec));
+            for element in self.iter_mut() {
+                let temp = rest;             // temp variable explains lifetimes (mysterious!)
+                rest = element.exhume(temp)?;
+            }
+            Some(rest)
+        }
+    }
+    #[inline] 
+    fn extent(&self) -> usize {
+        let mut sum = mem::size_of::<T>() * self.len();
+        for element in self.iter() {
+            sum += element.extent();
+        }
+        sum
+    }
+}
+
 // TODO: Code deactivated because 'c unbound; would not be safe for e.g. 'static.
 //
 // impl<'c, T: Abomonation> Abomonation for &'c [T] {
@@ -567,4 +604,41 @@ impl<T: Abomonation> Abomonation for Box<T> {
 // currently enables UB, by exposing padding bytes
 #[inline] unsafe fn typed_to_bytes<T>(slice: &[T]) -> &[u8] {
     std::slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len() * mem::size_of::<T>())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+
+    fn vec_deque_check<T: ::Abomonation+PartialEq+Eq+::std::fmt::Debug>(vd: VecDeque<T>) {
+        let mut bytes = Vec::new();
+        unsafe { ::encode(&vd, &mut bytes).unwrap(); }
+
+        if let Some((result, remaining)) = unsafe { ::decode::<VecDeque<T>>(&mut bytes) } {
+            eprintln!("{:?} =? {:?}", result, vd);
+            assert!(result == &vd);
+            assert!(remaining.len() == 0);
+        }
+    }
+
+    #[test]
+    fn vec_deque_roundtrip() {
+        let mut vd = VecDeque::new();
+        vd.push_back(13);
+        vd.push_back(18);
+        vd.push_back(12);
+        vd.pop_front().unwrap();
+        vd.pop_back().unwrap();
+
+        vec_deque_check(vd.clone());
+
+        vd.push_back(89);
+        vd.push_back(93);
+
+        vec_deque_check(vd.clone());
+
+        for _ in vd.drain(..) { }
+
+        vec_deque_check(vd.clone());
+    }
 }
